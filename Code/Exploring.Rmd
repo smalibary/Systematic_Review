@@ -1,0 +1,219 @@
+---
+title: "Exploring"
+output: html_document
+editor_options: 
+  chunk_output_type: console
+---
+
+---
+title: "December"
+author: "salem malibary"
+date: "`r Sys.Date()`"
+output: html_document
+editor_options:
+  chunk_output_type: console
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+# Load packages
+require(pacman)
+p_load(tidyverse,here, lubridate, RColorBrewer, gt, labelled, writexl, ggpubr, readxl, writexl)
+
+# Install all dataset needed for the project
+df_background <- read.csv(here("data", "df_included.csv"))
+df_processed <- read_excel(here("data", "processed_df.xlsx"))
+
+# Set global ggplot theme
+theme_set(theme_pubclean() +
+    theme(axis.text.x = element_text(angle = 45, hjust = 1),plot.title = element_text(hjust = 0.5)))
+```
+
+```{r}
+# Define function to concatenate unique values for categorical columns
+concat_unique <- function(x) {paste(unique(na.omit(x)), collapse = ", ")}
+
+# Group by 'ID' and summarize
+df_grouped <- df_processed |> group_by(ID) |> 
+  summarise(across(where(is.numeric), mean, na.rm = TRUE), across(where(is.character), concat_unique))
+```
+
+```{r}
+# Filter out rows with 0 exposure time and remove NAs in significance
+df_processed <- df_processed |> 
+  filter(Exposure.Time..Mins. > 0, !is.na(significant))
+
+# Scatter plot: Exposure Time vs. Participant Number with significance color + shape for Nature.Type
+df_processed |>
+  ggplot(aes(x = Exposure.Time..Mins., y = Size..n., 
+             color = significant, shape = Nature.Type)) +
+  geom_jitter(alpha = 0.7, size = 2, width = 3, height = 3) +  # Adds jitter to avoid overlap
+  scale_color_manual(values = c("yes" = "red", "no" = "black")) +
+  labs(title = "Exposure Time vs. Participant Number",
+       x = "Exposure Time (Minutes)",
+       y = "Number of Participants",
+       color = "Significance",
+       shape = "Nature Type") +
+  theme_minimal()
+```
+
+```{r}
+# Filter data: Keep only stress-related studies
+df_processed_stress <- df_processed |> 
+  filter(Exposure.Time..Mins. > 0, 
+         !is.na(significant), 
+         grepl("stress", dep_var, ignore.case = TRUE))
+
+# Scatter plot: Exposure Time vs. Participant Number (filtered for stress-related studies)
+df_processed_stress |>
+  ggplot(aes(x = Exposure.Time..Mins., y = Size..n., 
+             color = significant, shape = Nature.Type)) +
+  geom_jitter(alpha = 0.7, size = 3, width = 3, height = 3) +  # Adds jitter to avoid overlap
+  scale_color_manual(values = c("yes" = "skyblue", "no" = "black")) +
+  labs(title = "Exposure Time vs. Participant Number (Stress-related Studies)",
+       x = "Exposure Time (Minutes)",
+       y = "Number of Participants",
+       color = "Significance",
+       shape = "Nature Type")+
+  theme_minimal() 
+
+```
+
+```{r}
+# Filter data: Keep only stress-related studies with exposure time below 50 mins
+df_processed_stress <- df_processed |> 
+  filter(Exposure.Time..Mins. > 0, 
+         Exposure.Time..Mins. < 50,  
+         !is.na(significant), 
+         grepl("stress", dep_var, ignore.case = TRUE))
+
+# Scatter plot: Exposure Time vs. Participant Number (filtered for stress-related studies, <50 mins)
+df_processed_stress |>
+  ggplot(aes(x = Exposure.Time..Mins., y = Size..n., 
+             color = significant, shape = Nature.Type)) +
+  geom_jitter(alpha = 0.7, size = 3, width = 3, height = 3) +  # Adds jitter to avoid overlap
+  scale_color_manual(values = c("yes" = "red", "no" = "black")) +
+  labs(title = "Exposure Time vs. Participant Number (Stress-related Studies, <50 mins)",
+       x = "Exposure Time (Minutes)",
+       y = "Number of Participants",
+       color = "Significance",
+       shape = "Nature Type") +
+  theme_minimal()
+
+
+
+```
+
+```{r eval=FALSE, include=FALSE}
+labelled::var_label(df)
+```
+
+```{r eval=FALSE, include=FALSE}
+print(df_background$Nature.of.Data)
+```
+
+# Data Organization 
+
+```{r Delete Long Variables}
+df <- 
+  df_background |>
+  arrange(Name) |>
+  mutate(ID = sprintf("%03d", row_number())) |>
+  select(ID, everything(), -Media, -Link, -Ideas, -Main.Findings)
+```
+
+```{r Manipulate the COVID column into binary variables}
+df <- 
+  df |>
+  mutate(
+    Before_COVID = ifelse(is.na(COVID), NA, ifelse(grepl("Before COVID", COVID, ignore.case = TRUE), 1, 0)),
+    During_COVID = ifelse(is.na(COVID), NA, ifelse(grepl("During COVID", COVID, ignore.case = TRUE), 1, 0)),
+    After_COVID = ifelse(is.na(COVID), NA, ifelse(grepl("After COVID", COVID, ignore.case = TRUE), 1, 0))) |>
+  select(-COVID)
+```
+
+```{r Manipulate the Data.Collection. column into binary variables}
+df <- 
+  df |>
+  mutate(
+    Field = ifelse(is.na(Data.Collection.), NA, ifelse(grepl("Field", Data.Collection., ignore.case = TRUE), 1, 0)),
+    Lab = ifelse(is.na(Data.Collection.), NA, ifelse(grepl("Lab", Data.Collection., ignore.case = TRUE), 1, 0)),
+    Survey = ifelse(is.na(Data.Collection.), NA, ifelse(grepl("Survey", Data.Collection., ignore.case = TRUE), 1, 0)),
+    Interviews = ifelse(is.na(Data.Collection.), NA, ifelse(grepl("Interviews", Data.Collection., ignore.case = TRUE), 1, 0))) |>
+  select(-Data.Collection.)
+```
+
+```{r}
+dep_var_columns <- colnames(df)[grepl("your_correct_pattern", colnames(df))]
+
+```
+
+```{r Split and process Primary.Measure and Assessment columns}
+df <- 
+  df |>
+  mutate(
+    Primary.Measure = ifelse(is.na(Primary.Measure), list(NA), strsplit(as.character(Primary.Measure), ",\\s*")), 
+    Assessment = ifelse(is.na(Assessment), list(NA), strsplit(as.character(Assessment), ",\\s*")), 
+    Physical.Assessment = ifelse(is.na(Physical.Assessment), list(NA), strsplit(as.character(Physical.Assessment), ",\\s*"))
+  ) |>
+  tidyr::unnest_wider(Primary.Measure, names_sep = "_") |>
+  tidyr::unnest_wider(Assessment, names_sep = "_") |>
+  tidyr::unnest_wider(Physical.Assessment, names_sep = "_") |>
+  rename_with(~ paste0("dep_var", seq_along(.)), starts_with("Primary.Measure_")) |>
+  rename_with(~ paste0("assmnt", seq_along(.)), starts_with("Assessment_")) |>
+  rename_with(~ paste0("phys_assmnt", seq_along(.)), starts_with("Physical.Assessment_")) |>
+  select(matches("^dep_var"), matches("^assmnt"), matches("^phys_assmnt"), everything())
+
+```
+
+```{r the Design column into binary variables}
+df <- 
+  df |>
+  mutate(
+    Exp_Quant = ifelse(grepl("Experimental \\(Quant\\)", Design, ignore.case = TRUE), 1, 0),
+    Obs_Quant = ifelse(grepl("Observational \\(Quant\\)", Design, ignore.case = TRUE), 1, 0),
+    Desc_Quant = ifelse(grepl("Descriptive \\(Quant\\)", Design, ignore.case = TRUE), 1, 0),
+    Long_Quant = ifelse(grepl("Longitudinal \\(Quant\\)", Design, ignore.case = TRUE), 1, 0),
+    Mix_Methods = ifelse(grepl("Mixed-Methods \\(Qual/Quant\\)", Design, ignore.case = TRUE), 1, 0)) |>
+  select(-Design)
+```
+
+```{r the Stimuli column into binary variables}
+df <- 
+  df |>
+  mutate(
+    Stimuli_Visual = ifelse(is.na(Stimuli), NA, ifelse(grepl("Visual", Stimuli, ignore.case = TRUE), 1, 0)),
+    Stimuli_Auditory = ifelse(is.na(Stimuli), NA, ifelse(grepl("Auditory", Stimuli, ignore.case = TRUE), 1, 0)),
+    Stimuli_Tactile = ifelse(is.na(Stimuli), NA, ifelse(grepl("Tactile \\(Physical\\)", Stimuli, ignore.case = TRUE), 1, 0)),
+    Stimuli_Olfactory = ifelse(is.na(Stimuli), NA, ifelse(grepl("Olfactory", Stimuli, ignore.case = TRUE), 1, 0)),
+    Stimuli_Thermal = ifelse(is.na(Stimuli), NA, ifelse(grepl("Thermal", Stimuli, ignore.case = TRUE), 1, 0))  ) |>
+  select(-Stimuli) 
+```
+
+```{r the Nature.of.Data column into binary variables}
+# Manipulate 
+df <- 
+  df |>
+  mutate(Subjective = ifelse(is.na(`Nature.of.Data`) | `Nature.of.Data` == "", NA, 
+                             ifelse(`Nature.of.Data` == "Subjective" | `Nature.of.Data` == "Mixed", 1, 0)),
+         Objective = ifelse(is.na(`Nature.of.Data`) | `Nature.of.Data` == "", NA, 
+                            ifelse(`Nature.of.Data` == "Objective" | `Nature.of.Data` == "Mixed", 1, 0))) |>
+  select(-`Nature.of.Data`)
+```
+
+```{r}
+df <- 
+  df |> 
+  mutate(Row_ID = row_number()) |> 
+  pivot_longer( cols = matches("^(dep_var|assmnt|phys_assmnt)\\d+$"),
+                names_to = c(".value"),
+                names_pattern = "^(.*?)\\d+$")
+```
+
+```{r}
+df <- df |> 
+  select(ID, Name, starts_with("dep_var"), starts_with("assmnt"), starts_with("phys_assmnt"), everything())
+write.csv(df, file = here("data", "processed_df.csv"), row.names = FALSE)
+```
+
