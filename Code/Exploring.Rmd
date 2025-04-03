@@ -22,13 +22,59 @@ require(pacman)
 p_load(tidyverse,here, lubridate, RColorBrewer, gt, labelled, writexl, ggpubr, readxl, writexl)
 
 # Install all dataset needed for the project
-df_background <- read.csv(here("data", "df_included.csv"))
-df_processed <- read_excel(here("data", "processed_df.xlsx"))
+
+df <- read_excel(here("data", "01 systematic.xlsx"))
+df_meta <- read_excel(here("data", "01 meta.xlsx"))
 
 # Set global ggplot theme
 theme_set(theme_pubclean() +
     theme(axis.text.x = element_text(angle = 45, hjust = 1),plot.title = element_text(hjust = 0.5)))
 ```
+
+
+```{r}
+# Merge df_meta with df, keeping all original columns from df_meta and adding columns from df
+df_meta_updated <- df_meta %>%
+  left_join(df, by = "ID", suffix = c("", "_df"))
+```
+
+```{r}
+write.csv(df_meta_updated, "df_meta_updated.csv", row.names = FALSE)
+```
+
+```{r}
+# Identify columns consistent across all outcomes (assuming ID, Name, author, and other consistent columns)
+consistent_cols <- df %>%
+  select(-dep_var, -assmnt, -phys_assmnt) %>%
+  distinct(ID, .keep_all = TRUE)
+
+# Create an outcome number for each ID
+df_outcomes <- df %>%
+  group_by(ID) %>%
+  mutate(Outcome_Num = row_number()) %>%
+  ungroup() %>%
+  select(ID, Outcome_Num, dep_var, assmnt, phys_assmnt)
+
+# Pivot wider outcomes separately
+df_outcomes_wide <- df_outcomes %>%
+  pivot_wider(names_from = Outcome_Num,
+              values_from = c(dep_var, assmnt, phys_assmnt),
+              names_sep = "_") %>%
+  select(-matches("^(dep_var|assmnt|phys_assmnt)_(10|11|12)$"))
+
+# Join back with consistent columns
+df_final <- consistent_cols %>%
+  left_join(df_outcomes_wide, by = "ID")
+
+# View final dataframe
+print(df_final)
+
+```
+
+```{r}
+write_xlsx(df_final, "cleaned_final_dataset.xlsx")
+```
+
 
 ```{r}
 # Define function to concatenate unique values for categorical columns
@@ -106,7 +152,7 @@ df_processed_stress |>
 ```
 
 ```{r eval=FALSE, include=FALSE}
-labelled::var_label(df)
+labelled::var_label(df_final)
 ```
 
 ```{r eval=FALSE, include=FALSE}

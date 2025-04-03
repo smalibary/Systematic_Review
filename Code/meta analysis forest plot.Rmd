@@ -1,0 +1,515 @@
+---
+title: "meta testing (Reproducible)"
+author: "salem malibary"
+date: "`r Sys.Date()`"
+output: html_document
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+require(pacman)
+p_load(tidyverse, here, metafor, lubridate, RColorBrewer, gt, 
+       labelled, writexl, ggpubr, stringr, readxl, robumeta, patchwork)
+
+# Load real data
+meta_data <- read.csv(here("data", "02 meta ready to analysis.csv"))
+meta_data$variance <- (meta_data$standard_error)^2
+
+# Global theme
+my_theme <- theme_minimal(base_size = 14) +
+  theme(
+    legend.position = "top",
+    legend.direction = "horizontal",
+    legend.box = "vertical",
+    axis.text.y = element_text(family = "mono", size = 11)
+  )
+```
+
+```{r eval=FALSE, include=FALSE}
+labelled::var_label(meta_data)
+```
+
+```{r}
+meta_data <- meta_data  |> 
+  select(
+    -Column1, -Column2, -Column3, -Column4, -Column5,
+    -variance, -Row_ID, -Size..n., -significant,
+    -author, -Name)
+```
+
+```{r}
+
+```
+
+```{r}
+meta_data <- meta_data %>%
+  mutate(
+    n_total = case_when(
+      !is.na(n_high) & !is.na(n_low) ~ n_high + n_low,
+      !is.na(n_pre) & !is.na(n_post) ~ pmax(n_pre, n_post, na.rm = TRUE),
+      !is.na(n_pre) ~ n_pre,
+      !is.na(n_post) ~ n_post,
+      !is.na(sample.size) ~ sample.size,
+      TRUE ~ NA_real_
+    )
+  )
+```
+
+```{r}
+meta_data <- meta_data %>%
+  rename(
+    group        = group,
+    high         = group_high,
+    low          = group_low,
+    site         = site,
+    study_id     = author_year,
+    design       = study_design,
+    m1           = m_high,
+    m2           = m_low,
+    sd1          = sd_high,
+    sd2          = sd_low,
+    smd          = smd_effctsize,
+    se           = standard_error,
+    ci_low       = lower_ci,
+    ci_high      = upper_ci,
+    t_stat       = t,
+    df           = df,
+    sd_pooled    = pooled_sd
+  )
+```
+
+```{r}
+meta_data <- meta_data %>%
+  mutate(
+    # SMD for between-group design
+    smd_between = case_when(
+      !is.na(m1) & !is.na(m2) & !is.na(sd1) & !is.na(sd2) & !is.na(n_high) & !is.na(n_low) ~ 
+        (m1 - m2) / sqrt(((n_high - 1)*sd1^2 + (n_low - 1)*sd2^2) / (n_high + n_low - 2)),
+      TRUE ~ NA_real_
+    ),
+    
+    # SMD for within-group design
+    smd_within = case_when(
+      !is.na(m_post) & !is.na(m_pre) & !is.na(sd_pre) ~ 
+        (m_post - m_pre) / sd_pre,
+      !is.na(m_post) & !is.na(m_pre) & !is.na(sd_change) ~ 
+        (m_post - m_pre) / sd_change,
+      TRUE ~ NA_real_
+    )
+  )
+
+```
+
+```{r}
+meta_data <- meta_data %>%
+  mutate(
+    # SE for between-group SMD
+    se_between = case_when(
+      !is.na(smd_between) & !is.na(n_high) & !is.na(n_low) ~ 
+        sqrt((n_high + n_low) / (n_high * n_low) + (smd_between^2) / (2 * (n_high + n_low))),
+      TRUE ~ NA_real_
+    ),
+    
+    ci_low_between = smd_between - 1.96 * se_between,
+    ci_high_between = smd_between + 1.96 * se_between,
+    
+    # SE for within-group SMD
+    se_within = case_when(
+      !is.na(smd_within) & !is.na(n_pre) ~ 
+        sqrt(1 / n_pre + (smd_within^2) / (2 * n_pre)),
+      TRUE ~ NA_real_
+    ),
+    
+    ci_low_within = smd_within - 1.96 * se_within,
+    ci_high_within = smd_within + 1.96 * se_within
+  )
+
+```
+
+```{r}
+meta_data <- meta_data %>%
+  rename(
+    id            = ID,
+    group_high    = high,
+    group_low     = low,
+    n             = sample.size,
+    m_high        = m1,
+    m_low         = m2,
+    sd_high       = sd1,
+    sd_low        = sd2
+  )
+
+```
+
+```{r}
+names(meta_data) <- names(meta_data) %>%
+  str_replace_all("\\.", "_") %>%
+  str_replace_all("([a-z])([A-Z])", "\\1_\\2") %>%
+  tolower()
+
+```
+
+```{r}
+meta_data <- meta_data %>%
+  select(-delete, -direction_description, -significant_direction)
+```
+
+```{r}
+meta_data <- meta_data %>%
+  mutate(
+    smd_final = coalesce(smd_between, smd_within, smd),
+    se_final  = coalesce(se_between, se_within, se)
+  )
+```
+
+```{r}
+comparison <- meta_data %>%
+  select(study_id, smd, smd_final, se, se_final) %>%
+  mutate(
+    smd_diff = smd_final - smd,
+    se_diff  = se_final - se
+  )
+```
+
+
+```{r}
+head(comparison, 10)  # or View(comparison)
+```
+
+```{r}
+meta_data <- meta_data %>%
+  mutate(
+    use_final = case_when(
+      !is.na(smd_final) & abs(smd_final - smd) < 0.2 ~ TRUE,
+      is.na(smd) ~ TRUE,
+      TRUE ~ FALSE
+    )
+  )
+
+```
+
+```{r}
+meta_data %>%
+  filter(use_final == FALSE)
+```
+
+```{r}
+meta_data <- meta_data %>%
+  mutate(
+    smd_diff = smd_final - smd,
+    smd_flip_flag = ifelse(sign(smd_final) != sign(smd) & !is.na(smd) & !is.na(smd_final), TRUE, FALSE)
+  )
+
+```
+
+```{r}
+meta_data %>% filter(smd_flip_flag == TRUE)
+
+```
+
+```{r}
+meta_data <- meta_data %>%
+  mutate(
+    smd_final_harmonized = ifelse(smd_flip_flag == TRUE, -1 * smd_final, smd_final)
+  )
+```
+
+```{r}
+labelled::var_label(meta_data)$smd_final_harmonized <- "SMD (Harmonized Direction)"
+```
+
+```{r}
+meta_model <- rma(yi = smd_final_harmonized, sei = se_final, data = meta_data, method = "REML")
+summary(meta_model)
+forest(meta_model, slab = meta_data$study_id)
+
+```
+
+
+```{r}
+meta_data$exposure_time__mins_ <- as.numeric(meta_data$exposure_time__mins_)
+```
+
+```{r}
+meta_model_time <- rma(
+  yi = smd_final_harmonized,
+  sei = se_final,
+  mods = ~ exposure_time__mins_,
+  data = meta_data,
+  method = "REML"
+)
+summary(meta_model_time)
+
+
+```
+
+```{r eval=FALSE, include=FALSE}
+bubble(meta_model_time, xlab = "Exposure Time (minutes)")
+```
+
+```{r}
+meta_data$predicted <- predict(meta_model_time)$pred
+```
+
+----
+
+meta regression 
+```{r}
+library(ggplot2)
+
+ggplot(meta_data, aes(x = exposure_time__mins_, y = smd_final_harmonized)) +
+  geom_point(aes(size = 1 / se_final^2), alpha = 0.6) +  # weight by precision
+  geom_smooth(method = "lm", se = TRUE, color = "blue") +
+  labs(
+    x = "Exposure Time (minutes)",
+    y = "Harmonized SMD",
+    title = "Meta-Regression: Effect Size by Exposure Time"
+  ) +
+  theme_minimal(base_size = 14)
+
+```
+
+The slope is very flat, meaning:
+- No strong linear relationship between exposure time and effect size.
+- The shaded confidence band is wide, especially at higher exposure times.
+- This reflects uncertainty (fewer data points and more variance at longer durations).
+- There's a strong outlier at very low exposure time with a huge negative SMD.
+- That one study might heavily influence the model — worth checking separately.
+
+----
+```{r}
+meta_data <- meta_data %>%
+  mutate(
+    exposure_time_group = case_when(
+      is.na(exposure_time__mins_) ~ NA_character_,
+      exposure_time__mins_ <= 10 ~ "short",
+      exposure_time__mins_ <= 30 ~ "medium",
+      TRUE ~ "long"
+    ) %>% factor(levels = c("short", "medium", "long"))
+  )
+```
+
+```{r}
+meta_model_group <- rma(
+  yi = smd_final_harmonized,
+  sei = se_final,
+  mods = ~ exposure_time_group,
+  data = meta_data,
+  method = "REML"
+)
+summary(meta_model_group)
+forest(meta_model_group, slab = meta_data$study_id)
+```
+
+No significant effect of exposure time group:
+
+p-value for the moderator: 0.9546 → not statistically significant
+
+So, there's no evidence that SMD differs meaningfully across short, medium, or long exposure durations.
+
+Extremely high heterogeneity:
+
+I² = 99.65%
+
+Tau² = 4.82 (very high)
+
+This means the variation between studies is huge, and not explained by exposure_time_group.
+
+Group estimates:
+
+- "short" (intercept): -0.52 (not significant)
+
+- "medium": +0.17 higher than short → not significant
+
+- "long": +0.50 higher than short → also not 
+
+----
+
+```{r}
+funnel(meta_model)
+```
+
+```{r}
+tf_model <- trimfill(meta_model)
+funnel(tf_model, main = "Funnel Plot with Trim-and-Fill")
+```
+
+There’s a clear clustering of studies on the right side (positive SMDs), and a gap on the left.
+The trim-and-fill added several white circles on the left — suggesting potential publication bias, where small or negative-effect studies might be missing.
+overall effect may be inflated due to missing studies with smaller or negative results.
+After correction, the adjusted effect size is lower (closer to zero).
+
+```{r}
+regtest(meta_model, model = "rma", predictor = "sei")
+```
+
+----
+
+```{r}
+table(meta_data$design)
+```
+
+```{r}
+meta_data <- meta_data %>%
+  mutate(
+    design_group = case_when(
+      str_detect(tolower(design), "within") ~ "within",
+      str_detect(tolower(design), "pre") ~ "pre_post",
+      str_detect(tolower(design), "between") ~ "between",
+      TRUE ~ "other"
+    ) %>% factor(levels = c("between", "pre_post", "within", "other"))
+  )
+```
+
+```{r}
+meta_model_clean <- rma(
+  yi = smd_final_harmonized,
+  sei = se_final,
+  mods = ~ design_group,
+  data = meta_data,
+  method = "REML"
+)
+summary(meta_model_clean)
+
+```
+
+- within-subject designs tend to produce lower SMDs than between designs
+- The p-value is close to 0.05 → potentially meaningful, but not statistically confirmed
+- pre_post is not meaningfully different from between
+
+----
+```{r}
+meta_data <- meta_data %>%
+  mutate(
+    assessment_group = case_when(
+      str_detect(tolower(outcome_assessment), "pss") ~ "pss",
+      str_detect(tolower(outcome_assessment), "dass") ~ "dass",
+      str_detect(tolower(outcome_assessment), "tmd") ~ "tmd",
+      str_detect(tolower(outcome_assessment), "eeg|alpha") ~ "eeg",
+      str_detect(tolower(outcome_assessment), "conductance|scl|scr") ~ "sc",
+      TRUE ~ "other"
+    ) %>% factor(levels = c("pss", "dass", "tmd", "eeg", "sc", "other"))
+  )
+
+meta_model_assess <- rma(
+  yi = smd_final_harmonized,
+  sei = se_final,
+  mods = ~ assessment_group,
+  data = meta_data,
+  method = "REML"
+)
+
+```
+
+```{r}
+coefs <- summary(meta_model_assess)$b
+ci_low <- summary(meta_model_assess)$ci.lb
+ci_high <- summary(meta_model_assess)$ci.ub
+```
+
+```{r}
+coef_df <- data.frame(
+  group = str_replace(rownames(coefs), "assessment_group", ""),
+  estimate = coefs[, 1],
+  ci_low = ci_low,
+  ci_high = ci_high
+)
+```
+
+```{r}
+# Create the assessment_group variable
+meta_data <- meta_data %>%
+  mutate(
+    assessment_group = case_when(
+      str_detect(tolower(outcome_assessment), "pss") ~ "pss",
+      str_detect(tolower(outcome_assessment), "dass") ~ "dass",
+      str_detect(tolower(outcome_assessment), "tmd") ~ "tmd",
+      str_detect(tolower(outcome_assessment), "eeg|alpha") ~ "eeg",
+      str_detect(tolower(outcome_assessment), "conductance|scl|scr") ~ "sc",
+      TRUE ~ "other"
+    ) %>% factor(levels = c("pss", "dass", "tmd", "eeg", "sc", "other"))
+  )
+```
+
+```{r}
+meta_model_assess <- rma(
+  yi = smd_final_harmonized,
+  sei = se_final,
+  mods = ~ assessment_group,
+  data = meta_data,
+  method = "REML"
+)
+```
+
+```{r}
+# Clean model output
+coefs <- summary(meta_model_assess)$b
+ci_low <- summary(meta_model_assess)$ci.lb
+ci_high <- summary(meta_model_assess)$ci.ub
+
+# Fix group names and create base dataframe
+coef_df <- data.frame(
+  group = str_replace(rownames(coefs), "assessment_group", ""),
+  estimate = coefs[, 1],
+  ci_low = ci_low,
+  ci_high = ci_high
+)
+
+# Study counts
+group_counts <- meta_data %>%
+  group_by(assessment_group) %>%
+  summarise(k = n(), .groups = "drop") %>%
+  mutate(assessment_group = as.character(assessment_group))
+
+# Merge
+coef_df <- left_join(coef_df, group_counts, by = c("group" = "assessment_group"))
+
+# Labeling
+coef_df$group_label <- paste0(coef_df$group, " (n = ", coef_df$k, ")")
+coef_df$label <- paste0(
+  "SMD = ", sprintf("%.2f", coef_df$estimate), "\n",
+  "[", sprintf("%.2f", coef_df$ci_low), ", ", sprintf("%.2f", coef_df$ci_high), "]\n",
+  "n = ", coef_df$k
+)
+coef_df$significant <- ifelse(coef_df$ci_low > 0 | coef_df$ci_high < 0, "yes", "no")
+
+# Reorder for plotting
+coef_df <- coef_df %>%
+  arrange(estimate) %>%
+  mutate(group_label = factor(group_label, levels = group_label))
+
+# Plot
+ggplot(coef_df, aes(x = estimate, y = group_label, color = significant)) +
+  # Cohen's d bands
+  geom_rect(data = data.frame(), aes(xmin = -0.2, xmax = 0.2, ymin = -Inf, ymax = Inf),
+            fill = "gray90", alpha = 0.4, inherit.aes = FALSE) +
+  geom_rect(data = data.frame(), aes(xmin = -0.5, xmax = -0.2, ymin = -Inf, ymax = Inf),
+            fill = "gray85", alpha = 0.3, inherit.aes = FALSE) +
+  geom_rect(data = data.frame(), aes(xmin = 0.2, xmax = 0.5, ymin = -Inf, ymax = Inf),
+            fill = "gray85", alpha = 0.3, inherit.aes = FALSE) +
+  geom_rect(data = data.frame(), aes(xmin = -0.8, xmax = -0.5, ymin = -Inf, ymax = Inf),
+            fill = "gray80", alpha = 0.2, inherit.aes = FALSE) +
+  geom_rect(data = data.frame(), aes(xmin = 0.5, xmax = 0.8, ymin = -Inf, ymax = Inf),
+            fill = "gray80", alpha = 0.2, inherit.aes = FALSE) +
+  geom_rect(data = data.frame(), aes(xmin = -Inf, xmax = -0.8, ymin = -Inf, ymax = Inf),
+            fill = "gray75", alpha = 0.2, inherit.aes = FALSE) +
+  geom_rect(data = data.frame(), aes(xmin = 0.8, xmax = Inf, ymin = -Inf, ymax = Inf),
+            fill = "gray75", alpha = 0.2, inherit.aes = FALSE) +
+
+  # Labels for zones
+  annotate("text", x = 0, y = Inf, label = "Negligible", vjust = -1, size = 3.5, color = "gray40") +
+  annotate("text", x = 0.35, y = Inf, label = "Small", vjust = -1, size = 3.5, color = "gray40") +
+  annotate("text", x = 0.65, y = Inf, label = "Medium", vjust = -1, size = 3.5, color = "gray40") +
+  annotate("text", x = 1.2, y = Inf, label = "Large", vjust = -1, size = 3.5, color = "gray40") +
+  annotate("text", x = -0.35, y = Inf, label = "Small", vjust = -1, size = 3.5, color = "gray40") +
+  annotate("text", x = -0.65, y = Inf, label = "Medium", vjust = -1, size = 3.5, color = "gray40") +
+  annotate("text", x = -1.2, y = Inf, label = "Large", vjust = -1, size = 3.5, color = "gray40") +
+
+  # Main plot
+  geom_point(size = 4) 
+
+
+```
+

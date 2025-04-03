@@ -1,0 +1,393 @@
+---
+title: "meta testing (Reproducible)"
+author: "salem malibary"
+date: "`r Sys.Date()`"
+output: html_document
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+require(pacman)
+p_load(tidyverse, here, metafor, lubridate, RColorBrewer, gt, 
+       labelled, writexl, ggpubr, stringr, readxl, robumeta, patchwork)
+
+# Load real data
+meta_data <- read.csv(here("data", "02 meta ready to analysis.csv"))
+meta_data$variance <- (meta_data$standard_error)^2
+
+# Global theme
+my_theme <- theme_minimal(base_size = 14) +
+  theme(
+    legend.position = "top",
+    legend.direction = "horizontal",
+    legend.box = "vertical",
+    axis.text.y = element_text(family = "mono", size = 11)
+  )
+```
+
+```{r}
+meta_data <- read.csv(here("data", "02 meta ready to analysis.csv")) |>
+  mutate(
+    variance = standard_error^2,
+    assessment_group = case_when(
+      str_detect(outcome_assessment, regex("TMD", ignore_case = TRUE)) ~ "TMD",
+      str_detect(outcome_assessment, regex("PSS", ignore_case = TRUE)) ~ "PSS",
+      str_detect(outcome_assessment, regex("DASS", ignore_case = TRUE)) ~ "DASS",
+      str_detect(outcome_assessment, regex("EEG", ignore_case = TRUE)) ~ "EEG",
+      str_detect(outcome_assessment, regex("Skin Conductance|SC|SCL|SCR", ignore_case = TRUE)) ~ "SC",
+      TRUE ~ "Other"
+    )
+  )
+
+
+```
+
+```{r robust variance estimation + filter out top 1% variance}
+# Robust variance estimation
+rve_model <- robu(
+  formula = smd_effctsize ~ 1, 
+  data = meta_data, 
+  studynum = author_year, 
+  var.eff.size = variance, 
+  modelweights = "CORR", 
+  rho = 0.8,
+  small = TRUE)
+summary(rve_model)
+
+# Remove top 1% variance outliers
+meta_data <- meta_data %>% filter(variance < quantile(variance, 0.99, na.rm = TRUE))
+
+```
+
+```{r prepare meta_data with derived columns}
+meta_data <- meta_data %>%
+  mutate(
+    row_id = row_number(),
+    ci.lb = smd_effctsize - 1.96 * standard_error,
+    ci.ub = smd_effctsize + 1.96 * standard_error,
+    significant = case_when(
+      is.na(ci.lb) | is.na(ci.ub) ~ NA_character_,
+      ci.lb > 0 ~ "Yes",
+      ci.ub < 0 ~ "Yes",
+      TRUE ~ "No"
+    ),
+    study_label = paste0(author_year, " [", row_id, "]"),
+    study_label = factor(study_label, levels = study_label)
+  ) %>%
+  arrange(assessment_group, smd_effctsize)
+```
+
+
+```{r funnel plot with trim-fill + improved imputed points}
+# Funnel plot & Egger’s test
+rma_model <- rma(yi = smd_effctsize, sei = standard_error, data = meta_data)
+funnel(rma_model)
+regtest(rma_model)
+
+# Trim-and-fill
+tf_model <- trimfill(rma_model)
+
+# Prepare plot data
+meta_data_plot <- meta_data %>%
+  mutate(
+    is_outlier = abs(smd_effctsize) > 5 | standard_error > quantile(standard_error, 0.95)
+  )
+
+# Funnel triangle (95% CI region)
+se_range <- seq(0, max(meta_data_plot$standard_error, na.rm = TRUE), length.out = 100)
+center <- as.numeric(rma_model$b)
+funnel_left <- center - 1.96 * se_range
+funnel_right <- center + 1.96 * se_range
+funnel_region <- data.frame(
+  x = c(funnel_left, rev(funnel_right)),
+  y = c(se_range, rev(se_range))
+)
+
+# Imputed studies from trimfill
+imputed_df <- if (!is.null(tf_model$sei.f) && length(tf_model$sei.f) > 0) {
+  data.frame(x = tf_model$yi.f, y = tf_model$sei.f,
+             label = paste0("Imputed [", seq_along(tf_model$yi.f), "]"))
+} else {
+  NULL
+}
+
+# Plot
+ggplot(meta_data_plot, aes(x = smd_effctsize, y = standard_error, color = assessment_group)) +
+  # Funnel triangle background
+  geom_polygon(data = funnel_region, aes(x = x, y = y), fill = "gray90", alpha = 0.5, inherit.aes = FALSE) +
+  
+  # Observed studies
+  geom_point(size = 2) +
+
+  # Imputed studies (white circles with black border)
+  { if (!is.null(imputed_df)) list(
+    geom_point(data = imputed_df, aes(x = x, y = y), 
+               shape = 21, fill = "white", color = "black", stroke = 1, size = 3, inherit.aes = FALSE),
+    geom_text(data = imputed_df, aes(x = x, y = y, label = label), 
+              inherit.aes = FALSE, color = "black", size = 3, hjust = 1.1)
+  ) } +
+
+  # Outlier labels
+  geom_text(data = meta_data_plot %>% filter(is_outlier),
+            aes(label = study_label), hjust = -0.1, size = 3, color = "red") +
+
+  # Vertical center line
+  geom_vline(xintercept = center, linetype = "dashed") +
+
+  # Annotation for potential bias
+  annotate("text", 
+           x = center - 2, 
+           y = max(meta_data_plot$standard_error, na.rm = TRUE) * 0.95,
+           label = "← Likely Missing Studies", hjust = 1, size = 4, fontface = "italic") +
+  annotate("segment", 
+           x = center - 1.8, xend = center - 0.5,
+           y = max(meta_data_plot$standard_error, na.rm = TRUE) * 0.93,
+           yend = max(meta_data_plot$standard_error, na.rm = TRUE) * 0.85,
+           arrow = arrow(length = unit(0.2, "cm")), color = "black") +
+
+  labs(
+    title = "Funnel Plot with Trim-and-Fill and Bias Annotation",
+    x = "Observed Outcome (Effect Size)",
+    y = "Standard Error",
+    color = "Assessment Group"
+  ) +
+  my_theme
+
+
+```
+
+
+```{r}
+funnel(tf_model)
+```
+
+```{r subgroup meta-analysis + forest plot}
+# Subgroup meta-analysis
+subgroup_results <- meta_data %>%
+  group_by(assessment_group) %>%
+  do(subgroup_model = rma(yi = smd_effctsize, vi = variance, data = .)) %>%
+  mutate(
+    estimate = as.numeric(subgroup_model$b),
+    ci.lb = subgroup_model$ci.lb,
+    ci.ub = subgroup_model$ci.ub,
+    k = subgroup_model$k
+  ) %>%
+  ungroup()
+
+# Define Cohen's d interpretation
+effect_sizes <- data.frame(
+  xmin = c(-Inf, -0.8, -0.5, -0.2, 0.2, 0.5, 0.8),
+  xmax = c(-0.8, -0.5, -0.2, 0.2, 0.5, 0.8, Inf),
+  magnitude = factor(c("Large", "Medium", "Small", "Negligible", "Small", "Medium", "Large"),
+                     levels = c("Large", "Medium", "Small", "Negligible"))
+)
+
+# Forest plot
+ggplot(subgroup_results, aes(x = estimate, y = assessment_group, color = assessment_group)) +
+  geom_rect(data = effect_sizes, inherit.aes = FALSE,
+            aes(xmin = xmin, xmax = xmax, ymin = -Inf, ymax = Inf, fill = magnitude), alpha = 0.3) +
+  scale_fill_manual(values = c("Large" = "gray80", "Medium" = "gray90", 
+                               "Small" = "gray95", "Negligible" = "white")) +
+  geom_point(size = 3) +
+  geom_errorbarh(aes(xmin = ci.lb, xmax = ci.ub), height = 0.2) +
+  geom_text(aes(label = paste0(round(estimate, 2), "\n(n=", k, ")")),
+            vjust = 2, size = 3.5, fontface = "bold") +
+  geom_vline(xintercept = 0, linetype = "dashed") +
+  labs(
+    x = "Effect Size (SMD)",
+    y = "Assessment Group",
+    title = "Grouped Forest Plot with Cohen's Effect Size Interpretation",
+    fill = "Magnitude (Cohen)"
+  ) +
+  guides(color = "none") +
+  my_theme
+
+```
+
+
+```{r reusable forest plot object for subgroup results}
+# Create forest plot
+forest_plot_grouped <- ggplot(subgroup_results, aes(x = estimate, y = assessment_group, color = assessment_group)) +
+  geom_rect(data = effect_sizes, inherit.aes = FALSE,
+            aes(xmin = xmin, xmax = xmax, ymin = -Inf, ymax = Inf, fill = magnitude), alpha = 0.3) +
+  scale_fill_manual(values = c("Large" = "gray80", "Medium" = "gray90", 
+                               "Small" = "gray95", "Negligible" = "white")) +
+  geom_point(size = 3) +
+  geom_errorbarh(aes(xmin = ci.lb, xmax = ci.ub), height = 0.2, linewidth = 1) +
+  geom_text(aes(label = paste0(round(estimate, 2), "\n(n=", k, ")")),
+          vjust = 2, size = 3.5, fontface = "bold")+
+  geom_vline(xintercept = 0, linetype = "dashed") +
+  labs(
+    x = "Effect Size (SMD)",
+    y = "Assessment Group",
+    title = "Grouped Forest Plot with Cohen's Effect Size Interpretation",
+    fill = "Magnitude (Cohen)") +
+  scale_x_continuous(limits = c(min(subgroup_results$ci.lb) - 0.5,
+                                max(subgroup_results$ci.ub) + 0.5)) +
+  guides(color = "none") + my_theme
+```
+
+----
+
+```{r confidence intervals}
+meta_data <- meta_data %>%
+  mutate(
+    significant = case_when(
+      is.na(ci.lb) | is.na(ci.ub) ~ NA_character_,
+      ci.lb > 0 ~ "Yes",
+      ci.ub < 0 ~ "Yes",
+      TRUE ~ "No"
+    )
+  )
+```
+
+```{r forest plot for individual studies}
+forest_plot <- ggplot(meta_data, aes(x = smd_effctsize, y = study_label, color = assessment_group)) +
+  geom_rect(data = effect_sizes, inherit.aes = FALSE,
+            aes(xmin = xmin, xmax = xmax, ymin = -Inf, ymax = Inf, fill = magnitude),
+            alpha = 0.3) +
+  scale_fill_manual(values = c("Large" = "gray80", "Medium" = "gray90", 
+                               "Small" = "gray95", "Negligible" = "white")) +
+
+  # Highlight significant points with shape and size
+  geom_point(aes(shape = significant), size = 3) +
+  geom_errorbarh(aes(xmin = ci.lb, xmax = ci.ub), height = 0.3, linewidth = 0.8) +
+
+  geom_vline(xintercept = 0, linetype = "dashed") +
+
+  labs(
+    x = "Effect Size (SMD)",
+    y = "Study",
+    title = "Forest Plot of Individual Studies",
+    color = "Assessment Group",
+    fill = "Magnitude (Cohen)",
+    shape = "Significant"
+  ) + my_theme
+```
+
+
+----
+
+```{r exposure bin creation (cleaned)}
+meta_data_expo <- meta_data %>%
+  rename(exposure_time = `Exposure.Time..Mins.`) %>%
+  mutate(
+    exposure_bin = cut(
+      exposure_time,
+      breaks = c(-Inf, 5, 10, 20, 40, Inf),
+      labels = c("0–5 min", "6–10 min", "11–20 min", "21–40 min", "> 40 min"),
+      right = TRUE
+    )
+  ) %>%
+  group_by(assessment_group, exposure_bin) %>%
+  mutate(
+    group_index = cur_group_id(),
+    y_within = row_number()
+  ) %>%
+  ungroup() %>%
+  mutate(
+    y_pos = group_index * 5 + y_within
+  )
+```
+
+```{r subgroup meta-analysis by exposure group}
+library(metafor)
+
+subgroup_combo_results <- meta_data_expo %>%
+  filter(!is.na(exposure_bin), !is.na(assessment_group)) %>%
+  group_by(assessment_group, exposure_bin) %>%
+  do({
+    res <- tryCatch(
+      rma(yi = smd_effctsize, vi = variance, data = .),
+      error = function(e) NULL
+    )
+    if (is.null(res)) tibble()
+    else tibble(
+      estimate = as.numeric(res$b),
+      ci.lb = res$ci.lb,
+      ci.ub = res$ci.ub,
+      k = res$k
+    )
+  }) %>%
+  ungroup() %>%
+  mutate(
+    group_label = paste0(assessment_group, " (", exposure_bin, ")"),
+    group_label = factor(group_label, levels = rev(unique(paste0(assessment_group, " (", exposure_bin, ")"))))
+  )
+ # wide spacing between groups, tight within
+
+```
+
+
+```{r y-position layout by exposure group}
+subgroup_combo_results <- subgroup_combo_results %>%
+  mutate(
+    exposure_bin = as.character(exposure_bin)
+  ) %>%
+  arrange(factor(exposure_bin, levels = c("0–5 min", "6–10 min", "11–20 min", "21–40 min", "> 40 min")),
+          assessment_group) %>%
+  group_by(exposure_bin) %>%
+  mutate(
+    row_within_bin = row_number(),
+    y_pos = cur_group_id() * 5 + row_within_bin
+  ) %>%
+  ungroup()
+
+
+```
+
+```{r forest plot grouped by exposure bins}
+ggplot(subgroup_combo_results, aes(x = estimate, y = y_pos, color = assessment_group)) +
+  geom_rect(data = effect_sizes, inherit.aes = FALSE,
+            aes(xmin = xmin, xmax = xmax, ymin = -Inf, ymax = Inf, fill = magnitude),
+            alpha = 0.3) +
+  scale_fill_manual(values = c("Large" = "grey70", "Medium" = "grey80",
+                               "Small" = "grey90", "Negligible" = "white")) +
+  
+  geom_point(size = 3) +
+  geom_errorbarh(aes(xmin = ci.lb, xmax = ci.ub), height = 0.3, linewidth = 1) +
+  geom_text(aes(label = paste0("(n=", k, ")"), x = ci.ub + 0.3),
+            hjust = 0, size = 3.5, fontface = "bold") +
+  
+  geom_vline(xintercept = 0, linetype = "dashed") +
+
+  labs(
+    x = "Effect Size (SMD)",
+    y = NULL,
+    title = "Forest Plot Grouped by Exposure Bin with Nested Assessment Groups",
+    fill = "Magnitude (Cohen)",
+    color = "Assessment Group"
+  ) +
+  scale_y_continuous(
+    breaks = subgroup_combo_results$y_pos,
+    labels = paste0(subgroup_combo_results$assessment_group, " (", subgroup_combo_results$exposure_bin, ")")
+  ) +
+  my_theme
+  
+```
+
+```{r forest plot for individual studies}
+forest_plot <- ggplot(meta_data, aes(x = smd_effctsize, y = study_label, color = assessment_group)) +
+  geom_rect(data = effect_sizes, inherit.aes = FALSE,
+            aes(xmin = xmin, xmax = xmax, ymin = -Inf, ymax = Inf, fill = magnitude),
+            alpha = 0.3) +
+  scale_fill_manual(values = c("Large" = "gray80", "Medium" = "gray90", 
+                               "Small" = "gray95", "Negligible" = "white")) +
+  geom_point(aes(shape = significant), size = 3) +
+  geom_errorbarh(aes(xmin = ci.lb, xmax = ci.ub), height = 0.3, linewidth = 0.8) +
+  geom_vline(xintercept = 0, linetype = "dashed") +
+  labs(
+    x = "Effect Size (SMD)",
+    y = "Study",
+    title = "Forest Plot of Individual Studies",
+    color = "Assessment Group",
+    fill = "Magnitude (Cohen)",
+    shape = "Significant"
+  ) + my_theme
+```
+
+```{r eval=FALSE, include=FALSE}
+labelled::var_label(meta_data)
+```
