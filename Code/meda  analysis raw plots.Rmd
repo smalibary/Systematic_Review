@@ -1,0 +1,71 @@
+---
+title: "Untitled"
+author: "Salem Malibary"
+date: "2025-04-09"
+output: html_document
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r setup, include=FALSE}
+# Load packages
+knitr::opts_chunk$set(echo = TRUE)
+
+require(pacman)
+p_load(
+  tidyverse, here, metafor, lubridate, RColorBrewer, gt,
+  labelled, writexl, ggpubr, stringr, readxl, robumeta, patchwork, janitor
+)
+
+# Load Excel data
+df1 <- read_excel(here("data", "05 metanalayiss - reviewed.xlsx"), sheet = 1) |> janitor::clean_names()
+df2 <- read_excel(here("data", "05 metanalayiss - reviewed.xlsx"), sheet = 2) |> janitor::clean_names()
+
+# Prepare df1 (within-subjects)
+df1_clean <- df1 |> 
+  transmute(
+    author_year,
+    outcome,
+    yi = effect_size_hedges_g,
+    vi = (sd_change / sqrt(n))^2  # SE^2 = variance
+  )
+
+# Prepare df2 (between-subjects)
+df2_clean <- df2 |> 
+  transmute(
+    author_year,
+    outcome,
+    yi = effect_size_hedges_g,
+    vi = (sd_pooled / sqrt(n_high + n_low))^2
+  )
+
+# Combine datasets
+meta_data <- bind_rows(df1_clean, df2_clean)
+
+# Add confidence interval bounds
+meta_data <- meta_data |> 
+  mutate(
+    ci_lower = yi - 1.96 * sqrt(vi),
+    ci_upper = yi + 1.96 * sqrt(vi)
+  )
+
+# Filter out extreme outliers (e.g., CI width > 10)
+meta_data_filtered <- meta_data |>
+  filter((ci_upper - ci_lower) < 10) |>
+  mutate(
+    study_label = author_year,
+    outcome_label = outcome
+  )
+
+# Run random-effects meta-analysis
+res_clean <- rma(yi, vi, data = meta_data_filtered, slab = study_label)
+
+# Plot forest with Author-Year and Outcome
+forest(res_clean,
+       ilab = meta_data_filtered$outcome_label,
+       ilab.xpos = -10,
+       xlim = c(-15, 10),
+       cex = 0.8,
+       header = c("Author-Year", "Outcome"))
+```
+

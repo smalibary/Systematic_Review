@@ -1,0 +1,222 @@
+---
+title: "meta testing (Reproducible)"
+author: "salem malibary"
+date: "`r Sys.Date()`"
+output: html_document
+editor_options: 
+  chunk_output_type: console
+---
+```{r}
+# Chunk 1: Setup
+knitr::opts_chunk$set(echo = TRUE)
+
+require(pacman)
+p_load(
+  tidyverse, here, metafor, lubridate, RColorBrewer, gt, 
+  labelled, writexl, ggpubr, stringr, readxl, robumeta, patchwork, janitor
+)
+
+# Load Excel data
+df1 <- read_excel(here("data", "05 metanalayiss - reviewed.xlsx"), sheet = 1) |> janitor::clean_names()
+df2 <- read_excel(here("data", "05 metanalayiss - reviewed.xlsx"), sheet = 2) |> janitor::clean_names()
+
+# Global ggplot theme
+my_theme <- theme_minimal(base_size = 14) +
+  theme(
+    legend.position = "top",
+    legend.direction = "horizontal",
+    legend.box = "vertical",
+    axis.text.y = element_text(family = "mono", size = 11)
+  )
+
+# Add dummy 'condition' column if missing
+if (!"condition" %in% names(df1)) df1$condition <- NA_character_
+if (!"condition" %in% names(df2)) df2$condition <- NA_character_
+
+# Prepare df1 (within-subject)
+df1 <- df1 |>
+  rename(hedges_g = effect_size_hedges_g) |>
+  mutate(
+    vi = (sd_change / sqrt(as.numeric(n)))^2,
+    design = "Within"
+  )
+
+# Prepare df2 (between-subject)
+df2 <- df2 |>
+  rename(hedges_g = effect_size_hedges_g) |>
+  mutate(
+    hedges_g = as.numeric(hedges_g),
+    vi = (sd_pooled^2) * (1 / as.numeric(n_high) + 1 / as.numeric(n_low)),
+    id = as.character(id),
+    design = "Between"
+  ) |>
+  filter(
+    !id %in% c("24"),  # Remove extreme outlier
+    !is.na(hedges_g), is.finite(hedges_g),
+    !is.na(vi), is.finite(vi)
+  )
+
+# Combine both datasets
+df_combined <- bind_rows(
+  df1 |> select(author_year, condition, outcome, hedges_g, vi, design, n),
+  df2 |> select(author_year, condition, outcome, hedges_g, vi, design, n_high, n_low)
+) |>
+  mutate(
+    # Outcome grouping
+    outcome_short = case_when(
+      str_detect(tolower(outcome), "skin") ~ "Skin Conductance",
+      str_detect(tolower(outcome), "tmd") ~ "TMD",
+      str_detect(tolower(outcome), "stress|pss") ~ "PSS",
+      str_detect(tolower(outcome), "alpha|beta|eeg") ~ "EEG",
+      TRUE ~ "Other"
+    ),
+    # Sample size
+    sample_size = case_when(
+      design == "Within" ~ as.numeric(n),
+      design == "Between" ~ as.numeric(n_high) + as.numeric(n_low),
+      TRUE ~ NA_real_
+    )
+  )
+
+# Sort outcome type (TMD first)
+df_combined$outcome_short <- factor(
+  df_combined$outcome_short,
+  levels = c("TMD", "PSS", "Skin Conductance", "EEG", "Other")
+)
+
+# Final labeling and plot order
+df_combined <- df_combined |>
+  arrange(outcome_short, desc(hedges_g)) |>
+  mutate(
+    outcome_clean = outcome |> str_remove_all("\\(.*?\\)") |> str_squish(),
+    condition_label = if_else(is.na(condition), "", paste0(" [", condition, "]")),
+    study_label = paste0(author_year, " – ", outcome_short, ": ", outcome_clean, condition_label, " (n = ", sample_size, ")"),
+    study_label = factor(study_label, levels = rev(unique(study_label)))
+  )
+
+# Run combined meta-analysis
+res_combined <- rma(yi = hedges_g, vi = vi, data = df_combined, method = "REML")
+
+
+
+```
+
+```{r}
+library(ggtext)
+
+# Sort by outcome then author_year ascending
+df_combined <- df_combined |>
+  arrange(outcome_short, author_year) |>
+  mutate(
+    outcome_header = paste0("**", outcome_short, "**"),
+    author_label = paste0(author_year),
+    condition_label = paste0(ifelse(!is.na(condition), paste0("[", condition, "] "), ""), "(n = ", sample_size, ")"),
+    label_row = paste0(author_label),
+    outcome_short = factor(outcome_short, levels = c("TMD", "PSS", "Skin Conductance", "EEG", "Other"))
+  )
+
+# Create fake header rows
+header_rows <- df_combined |>
+  distinct(outcome_short) |>
+  mutate(
+    label_row = as.character(outcome_short),
+    author_label = outcome_short,
+    condition_label = "",
+    hedges_g = NA,
+    vi = NA,
+    sample_size = NA,
+    significant = NA,
+    point_size = NA,
+    point_shape = NA,
+    y_is_header = TRUE
+  )
+
+# Append to data
+df_combined$y_is_header <- FALSE
+df_plot <- bind_rows(header_rows, df_combined) |>
+  arrange(outcome_short, y_is_header, author_label) |>
+  mutate(y_axis = row_number())
+
+# Band zones
+effect_zones <- tibble(
+  xmin = c(-Inf, -0.8, -0.5, -0.2, 0.2, 0.5, 0.8),
+  xmax = c(-0.8, -0.5, -0.2, 0.2, 0.5, 0.8, Inf),
+  zone = c("Large", "Medium", "Small", "Negligible", "Small", "Medium", "Large")
+)
+
+# Plot
+ggplot(df_plot, aes(x = hedges_g, y = y_axis)) +
+
+  # Gradient bands
+  geom_rect(data = effect_zones,
+            aes(xmin = xmin, xmax = xmax, ymin = -Inf, ymax = Inf, fill = zone),
+            inherit.aes = FALSE, alpha = 0.1) +
+
+  # Error bars
+  geom_errorbarh(
+    data = df_plot |> filter(!y_is_header),
+    aes(xmin = hedges_g - 1.96 * sqrt(vi), xmax = hedges_g + 1.96 * sqrt(vi), color = outcome_short),
+    height = 0.3
+  ) +
+
+  # Points
+  geom_point(
+    data = df_plot |> filter(!y_is_header),
+    aes(size = sample_size, shape = outcome_short, color = outcome_short)
+  ) +
+
+  # Left labels (author)
+  geom_text(
+    aes(label = ifelse(y_is_header, author_label, paste0("   ", label_row))),
+    x = -3.5, hjust = 0, size = 3.2, fontface = ifelse(df_plot$y_is_header, "bold", "plain")
+  ) +
+
+  # Right labels (condition)
+  geom_text(
+    aes(label = condition_label),
+    x = 3.5, hjust = 1, size = 3.2, color = "gray30"
+  ) +
+
+  # Effect sizes as text
+  geom_text(
+    data = df_plot |> filter(!y_is_header),
+    aes(label = sprintf("%.2f", hedges_g)),
+    hjust = -0.6, size = 3
+  ) +
+
+  geom_vline(xintercept = 0, linetype = "dashed", color = "gray30") +
+
+  scale_x_continuous(
+    limits = c(-3.5, 3.5),
+    breaks = seq(-3, 3, 1),
+    name = "Hedges' g (Effect Size)"
+  ) +
+
+  scale_fill_manual(
+    values = c("Negligible" = "gray95", "Small" = "gray90", "Medium" = "gray85", "Large" = "gray80"),
+    guide = guide_legend(reverse = TRUE),
+    name = "Effect Size Interpretation"
+  ) +
+
+  scale_color_brewer(palette = "Set2", name = "Outcome Type") +
+  scale_shape_manual(values = c(16, 17, 15, 18, 8)) +
+  scale_size_continuous(range = c(2, 6), guide = "none") +
+
+  labs(
+    title = "Effect Sizes of Nature-Based Interventions",
+    subtitle = "Grouped by Outcome Type and Study Condition – Hedges' g with 95% CI",
+    y = NULL
+  ) +
+
+  theme_minimal(base_size = 13) +
+  theme(
+    legend.position = "top",
+    plot.title = element_text(face = "bold", size = 15),
+    plot.subtitle = element_text(size = 11),
+    panel.grid.major.y = element_blank(),
+    axis.text.y = element_blank(),
+    axis.ticks.y = element_blank()
+  )
+
+```
+
