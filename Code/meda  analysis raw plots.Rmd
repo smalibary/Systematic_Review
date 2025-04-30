@@ -118,3 +118,59 @@ funnel(meta_model, xlim = c(-3, 3))
 regtest(meta_model, model = "rma")
 
 ```
+
+```{r}
+# Influence diagnostics
+inf <- influence(meta_model)
+print(inf)
+
+# Plot influence diagnostics
+plot(inf)
+
+```
+
+```{r}
+# Leave-one-out analysis
+leave1out(meta_model)
+
+```
+
+
+```{r}
+# Trim and fill
+taf <- trimfill(meta_model)
+
+# View results
+summary(taf)
+
+# Funnel plot with imputed studies
+funnel(taf, xlim = c(-3, 3))
+
+```
+
+```{r}
+# Funnel plot and Egger's test per outcome group
+for (grp in groups) {
+  cat("\n\n#### Funnel Plot & Egger's Test - Outcome Group:", grp, "####\n\n")
+  
+  df_sub <- df_combined %>% filter(outcome_group == grp)
+  
+  if (nrow(df_sub) < 3) {
+    cat("Not enough studies (n <", nrow(df_sub), ") to perform Egger's test.\n")
+    next
+  }
+  
+  model_sub <- rma(yi = effect_size_hedges_g, vi = vi, data = df_sub, method = "REML")
+  
+  funnel(model_sub, 
+         xlim = c(-3, 3), 
+         main = paste("Funnel plot -", grp),
+         xlab = "Effect Size (Hedges' g)")
+  
+  # Egger's regression test
+  egger_result <- regtest(model_sub, model = "rma")
+  print(egger_result)
+}
+
+```
+
