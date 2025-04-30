@@ -146,6 +146,27 @@ summary(taf)
 # Funnel plot with imputed studies
 funnel(taf, xlim = c(-3, 3))
 
+
+```
+
+```{r}
+# Trim and fill
+taf <- trimfill(meta_model)
+
+# View results
+summary(taf)
+
+# Funnel plot with imputed studies
+funnel(taf, xlim = c(-3, 3))
+
+```
+
+
+
+```{r}
+# Meta-regression on outcome_group
+metareg(meta_model, ~ outcome_group)
+
 ```
 
 ```{r}
@@ -174,3 +195,13 @@ for (grp in groups) {
 
 ```
 
+
+```{r}
+meta_reg <- rma(yi = effect_size_hedges_g, vi = vi, mods = ~ outcome_group, data = df_combined, method = "REML")
+summary(meta_reg)
+```
+
+```{r}
+regtest(meta_model, model = "rma")
+
+```
