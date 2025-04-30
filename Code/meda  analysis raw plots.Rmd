@@ -16,56 +16,105 @@ p_load(
   tidyverse, here, metafor, lubridate, RColorBrewer, gt,
   labelled, writexl, ggpubr, stringr, readxl, robumeta, patchwork, janitor
 )
-
-# Load Excel data
-df1 <- read_excel(here("data", "05 metanalayiss - reviewed.xlsx"), sheet = 1) |> janitor::clean_names()
-df2 <- read_excel(here("data", "05 metanalayiss - reviewed.xlsx"), sheet = 2) |> janitor::clean_names()
-
-# Prepare df1 (within-subjects)
-df1_clean <- df1 |> 
-  transmute(
-    author_year,
-    outcome,
-    yi = effect_size_hedges_g,
-    vi = (sd_change / sqrt(n))^2  # SE^2 = variance
-  )
-
-# Prepare df2 (between-subjects)
-df2_clean <- df2 |> 
-  transmute(
-    author_year,
-    outcome,
-    yi = effect_size_hedges_g,
-    vi = (sd_pooled / sqrt(n_high + n_low))^2
-  )
-
-# Combine datasets
-meta_data <- bind_rows(df1_clean, df2_clean)
-
-# Add confidence interval bounds
-meta_data <- meta_data |> 
-  mutate(
-    ci_lower = yi - 1.96 * sqrt(vi),
-    ci_upper = yi + 1.96 * sqrt(vi)
-  )
-
-# Filter out extreme outliers (e.g., CI width > 10)
-meta_data_filtered <- meta_data |>
-  filter((ci_upper - ci_lower) < 10) |>
-  mutate(
-    study_label = author_year,
-    outcome_label = outcome
-  )
-
-# Run random-effects meta-analysis
-res_clean <- rma(yi, vi, data = meta_data_filtered, slab = study_label)
-
-# Plot forest with Author-Year and Outcome
-forest(res_clean,
-       ilab = meta_data_filtered$outcome_label,
-       ilab.xpos = -10,
-       xlim = c(-15, 10),
-       cex = 0.8,
-       header = c("Author-Year", "Outcome"))
 ```
 
+
+```{r}
+# Load and clean data
+df1 <- read_excel(here("data", "05 metanalayiss - reviewed.xlsx"), sheet = 2) %>% janitor::clean_names()
+df2 <- read_excel(here("data", "05 metanalayiss - reviewed.xlsx"), sheet = 3) %>% janitor::clean_names()
+```
+
+```{r}
+glimpse(df2)
+```
+
+```{r}
+library(dplyr)
+library(metafor)
+
+# Step 1 - For df1 (within-subjects)
+df1 <- df1 %>%
+  mutate(
+    study_label = paste(author_year, "-", outcome_group),
+    vi = (2 * (1 - r) / n) + (effect_size_hedges_g^2 / (2 * n))
+  ) %>%
+  select(effect_size_hedges_g, vi, study_label, outcome_group)   # <- no meta_design
+
+# Step 2 - For df2 (between-groups)
+df2 <- df2 %>%
+  mutate(
+    study_label = paste(author_year, "-", outcome_group),
+    vi = (n_high + n_low) / (n_high * n_low) + (effect_size_hedges_g^2 / (2 * (n_high + n_low)))
+  ) %>%
+  select(effect_size_hedges_g, vi, study_label, outcome_group)   # <- no meta_design
+
+# Step 3 - Combine
+df_combined <- bind_rows(df1, df2)
+
+# Step 4 - Fit random-effects meta-analysis
+meta_model <- rma(yi = effect_size_hedges_g, vi = vi, data = df_combined, method = "REML")
+
+# Step 5 - Forest plot
+forest(meta_model, slab = df_combined$study_label)
+
+# Step 6 - Funnel plot
+funnel(meta_model)
+
+
+```
+
+```{r}
+# Step 3.5 - Reorder by outcome_group and descending effect size
+df_combined <- df_combined %>%
+  arrange(outcome_group, desc(effect_size_hedges_g))
+
+```
+
+```{r}
+# Step 4 - Fit model again
+meta_model <- rma(yi = effect_size_hedges_g, vi = vi, data = df_combined, method = "REML")
+
+# Step 5 - Forest plot with reordered labels
+forest(meta_model, slab = df_combined$study_label)
+
+```
+
+```{r}
+library(metafor)
+
+# Get unique outcome groups
+groups <- unique(df_combined$outcome_group)
+
+# Loop through each outcome group
+for (grp in groups) {
+  cat("\n\n#### Outcome Group:", grp, "####\n\n")
+  
+  df_sub <- df_combined %>% filter(outcome_group == grp)
+
+  # Skip groups with too few studies
+  if (nrow(df_sub) < 2) next
+  
+  model_sub <- rma(yi = effect_size_hedges_g, vi = vi, data = df_sub, method = "REML")
+  
+  forest(model_sub, 
+         slab = df_sub$study_label, 
+         xlim = c(-7, 7),      # << set fixed x-axis limits
+         alim = c(-4, 4),      # << also restrict the plot area
+         main = paste("Forest plot -", grp),
+         xlab = "Effect Size (Hedges' g)"
+  )
+}
+
+```
+
+```{r}
+# Fit the overall meta-analysis model again (already fitted as meta_model)
+
+# Basic funnel plot
+funnel(meta_model, xlim = c(-3, 3))
+
+# Optional: Add Egger's regression test for asymmetry
+regtest(meta_model, model = "rma")
+
+```
