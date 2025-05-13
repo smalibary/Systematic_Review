@@ -1,0 +1,207 @@
+---
+title: "Untitled"
+author: "Salem Malibary"
+date: "2025-04-09"
+output: html_document
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r setup, include=FALSE}
+# Load packages
+knitr::opts_chunk$set(echo = TRUE)
+
+require(pacman)
+p_load(
+  tidyverse, here, metafor, lubridate, RColorBrewer, gt,
+  labelled, writexl, ggpubr, stringr, readxl, robumeta, patchwork, janitor
+)
+```
+
+
+```{r}
+# Load and clean data
+df1 <- read_excel(here("data", "05 metanalayiss - reviewed.xlsx"), sheet = 2) %>% janitor::clean_names()
+df2 <- read_excel(here("data", "05 metanalayiss - reviewed.xlsx"), sheet = 3) %>% janitor::clean_names()
+```
+
+```{r}
+glimpse(df2)
+```
+
+```{r}
+library(dplyr)
+library(metafor)
+
+# Step 1 - For df1 (within-subjects)
+df1 <- df1 %>%
+  mutate(
+    study_label = paste(author_year, "-", outcome_group),
+    vi = (2 * (1 - r) / n) + (effect_size_hedges_g^2 / (2 * n))
+  ) %>%
+  select(effect_size_hedges_g, vi, study_label, outcome_group)   # <- no meta_design
+
+# Step 2 - For df2 (between-groups)
+df2 <- df2 %>%
+  mutate(
+    study_label = paste(author_year, "-", outcome_group),
+    vi = (n_high + n_low) / (n_high * n_low) + (effect_size_hedges_g^2 / (2 * (n_high + n_low)))
+  ) %>%
+  select(effect_size_hedges_g, vi, study_label, outcome_group)   # <- no meta_design
+
+# Step 3 - Combine
+df_combined <- bind_rows(df1, df2)
+
+# Step 4 - Fit random-effects meta-analysis
+meta_model <- rma(yi = effect_size_hedges_g, vi = vi, data = df_combined, method = "REML")
+
+# Step 5 - Forest plot
+forest(meta_model, slab = df_combined$study_label)
+
+# Step 6 - Funnel plot
+funnel(meta_model)
+
+
+```
+
+```{r}
+# Step 3.5 - Reorder by outcome_group and descending effect size
+df_combined <- df_combined %>%
+  arrange(outcome_group, desc(effect_size_hedges_g))
+
+```
+
+```{r}
+# Step 4 - Fit model again
+meta_model <- rma(yi = effect_size_hedges_g, vi = vi, data = df_combined, method = "REML")
+
+# Step 5 - Forest plot with reordered labels
+forest(meta_model, slab = df_combined$study_label)
+
+```
+
+```{r}
+library(metafor)
+
+# Get unique outcome groups
+groups <- unique(df_combined$outcome_group)
+
+# Loop through each outcome group
+for (grp in groups) {
+  cat("\n\n#### Outcome Group:", grp, "####\n\n")
+  
+  df_sub <- df_combined %>% filter(outcome_group == grp)
+
+  # Skip groups with too few studies
+  if (nrow(df_sub) < 2) next
+  
+  model_sub <- rma(yi = effect_size_hedges_g, vi = vi, data = df_sub, method = "REML")
+  
+  forest(model_sub, 
+         slab = df_sub$study_label, 
+         xlim = c(-7, 7),      # << set fixed x-axis limits
+         alim = c(-4, 4),      # << also restrict the plot area
+         main = paste("Forest plot -", grp),
+         xlab = "Effect Size (Hedges' g)"
+  )
+}
+
+```
+
+```{r}
+# Fit the overall meta-analysis model again (already fitted as meta_model)
+
+# Basic funnel plot
+funnel(meta_model, xlim = c(-3, 3))
+
+# Optional: Add Egger's regression test for asymmetry
+regtest(meta_model, model = "rma")
+
+```
+
+```{r}
+# Influence diagnostics
+inf <- influence(meta_model)
+print(inf)
+
+# Plot influence diagnostics
+plot(inf)
+
+```
+
+```{r}
+# Leave-one-out analysis
+leave1out(meta_model)
+
+```
+
+
+```{r}
+# Trim and fill
+taf <- trimfill(meta_model)
+
+# View results
+summary(taf)
+
+# Funnel plot with imputed studies
+funnel(taf, xlim = c(-3, 3))
+
+
+```
+
+```{r}
+# Trim and fill
+taf <- trimfill(meta_model)
+
+# View results
+summary(taf)
+
+# Funnel plot with imputed studies
+funnel(taf, xlim = c(-3, 3))
+
+```
+
+
+
+```{r}
+# Meta-regression on outcome_group
+metareg(meta_model, ~ outcome_group)
+
+```
+
+```{r}
+# Funnel plot and Egger's test per outcome group
+for (grp in groups) {
+  cat("\n\n#### Funnel Plot & Egger's Test - Outcome Group:", grp, "####\n\n")
+  
+  df_sub <- df_combined %>% filter(outcome_group == grp)
+  
+  if (nrow(df_sub) < 3) {
+    cat("Not enough studies (n <", nrow(df_sub), ") to perform Egger's test.\n")
+    next
+  }
+  
+  model_sub <- rma(yi = effect_size_hedges_g, vi = vi, data = df_sub, method = "REML")
+  
+  funnel(model_sub, 
+         xlim = c(-3, 3), 
+         main = paste("Funnel plot -", grp),
+         xlab = "Effect Size (Hedges' g)")
+  
+  # Egger's regression test
+  egger_result <- regtest(model_sub, model = "rma")
+  print(egger_result)
+}
+
+```
+
+
+```{r}
+meta_reg <- rma(yi = effect_size_hedges_g, vi = vi, mods = ~ outcome_group, data = df_combined, method = "REML")
+summary(meta_reg)
+```
+
+```{r}
+regtest(meta_model, model = "rma")
+
+```

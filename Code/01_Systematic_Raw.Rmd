@@ -1,0 +1,380 @@
+---
+title: "systematic review v3"
+author: "Salem Malibary"
+date: "2025-05-13"
+output: html_document
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r setup, include=FALSE}
+# Load packages
+knitr::opts_chunk$set(echo = TRUE)
+
+require(pacman)
+p_load(
+  tidyverse, here, metafor, lubridate, RColorBrewer, gt,
+  labelled, writexl, ggpubr, stringr, readxl, robumeta, patchwork, janitor, ggmosaic, viridis,scales
+)
+```
+
+
+```{r}
+# Load and clean data
+df <- read_excel(here("data", "01 systematic.xlsx"), sheet = 2) %>% janitor::clean_names()
+```
+
+```{r}
+glimpse(df)
+```
+
+```{r}
+# 0. Rename columns to syntactic-friendly names
+df <- df %>% rename(
+  sample_size          = size_n,
+  exposure_mins        = exposure_time_mins,
+  country              = country_of_expirement,
+  industry             = industry_of_participant,
+  nature_type          = nature_type,
+  real_exposure_type   = real_exposure_type,
+  before_covid         = before_covid,
+  during_covid         = during_covid,
+  after_covid          = after_covid,
+  field_method         = field,
+  lab_method           = lab,
+  survey_method        = survey,
+  interviews_method    = interviews,
+  stimuli_visual       = stimuli_visual,
+  stimuli_auditory     = stimuli_auditory,
+  stimuli_tactile      = stimuli_tactile,
+  stimuli_olfactory    = stimuli_olfactory,
+  stimuli_thermal      = stimuli_thermal,
+  dep1                 = dep_var_1,
+  dep2                 = dep_var_2,
+  dep3                 = dep_var_3,
+  dep4                 = dep_var_4,
+  dep5                 = dep_var_5,
+  dep6                 = dep_var_6,
+  dep7                 = dep_var_7,
+  dep8                 = dep_var_8,
+  dep9                 = dep_var_9,
+  assmnt1              = assmnt_1,
+  assmnt2              = assmnt_2,
+  assmnt3              = assmnt_3,
+  assmnt4              = assmnt_4,
+  assmnt5              = assmnt_5,
+  assmnt6              = assmnt_6,
+  assmnt7              = assmnt_7,
+  assmnt8              = assmnt_8,
+  assmnt9              = assmnt_9
+)
+
+```
+
+```{r}
+# 2. Bar chart of Nature.Type
+ggplot(df, aes(x = nature_type)) +
+  geom_bar(fill = "forestgreen") +
+  labs(x = "Nature Type", y = "Number of Studies") +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+```
+
+```{r}
+
+# 3. Bar chart of Industry.of.Participant
+ggplot(df, aes(x = industry)) +
+  geom_bar(fill = "tomato") +
+  labs(x = "Participant Industry", y = "Count") +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+```
+
+```{r}
+# 4. Histogram of Exposure.Time..Mins.
+ggplot(df, aes(x = exposure_mins)) +
+  geom_histogram(binwidth = 5, fill = "purple", color = "white") +
+  labs(x = "Exposure Time (mins)", y = "Count")
+```
+
+```{r}
+# 5. Stacked bar of significant direction by Nature.Type
+ggplot(df, aes(x = nature_type, fill = significant_direction)) +
+  geom_bar(position = "fill") +
+  scale_y_continuous(labels = scales::percent) +
+  labs(x = "Nature Type", y = "Proportion", fill = "Direction")
+
+```
+
+```{r}
+# Prepare the data: pivot COVID flags into long format and drop both real NA and "NA" strings
+df_covid <- df %>%
+  pivot_longer(
+    cols      = c(before_covid, during_covid, after_covid),
+    names_to  = "Phase",
+    values_to = "Flag"
+  ) %>%
+  filter(
+    Flag == "1",
+    !is.na(real_exposure_type),
+    real_exposure_type != "NA",
+    real_exposure_type != ""
+  )
+
+# Stacked-bar of COVID phase by real_exposure_type (cleaned)
+ggplot(df_covid, aes(x = Phase, fill = real_exposure_type)) +
+  geom_bar(position = "fill") +
+  scale_y_continuous(labels = scales::percent_format()) +
+  labs(
+    x    = "COVID Phase",
+    y    = "Proportion of Studies",
+    fill = "Real Exposure Type"
+  ) +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+```
+
+```{r}
+# 8. Grouped bar of Field vs Lab vs Survey vs Interviews
+method_cols <- c("field_method","lab_method","survey_method","interviews_method")
+df_long <- df %>% pivot_longer(all_of(method_cols), names_to = "Method", values_to = "Flag")
+ggplot(df_long, aes(x = Method, weight = Flag)) +
+  geom_bar(fill = "skyblue") +
+  labs(x = "Method", y = "Number of Studies") +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+```
+
+```{r}
+# 9. Boxplot of Exposure.Time..Mins. by Nature.Type
+ggplot(df, aes(x = nature_type, y = exposure_mins)) +
+  geom_boxplot(fill = "lightgreen") +
+  labs(x = "Nature Type", y = "Exposure Time (mins)")
+```
+
+```{r}
+# 10. Violin plot of sample size by Country.of.Expirement (top 8)
+top8 <- df %>% count(country) %>% top_n(8, n) %>% pull(country)
+ggplot(df %>% filter(country %in% top8),
+       aes(x = country, y = sample_size)) +
+  geom_violin(fill = "gold") +
+  labs(x = "Country", y = "Sample Size") +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+```
+
+```{r}
+# 12. Scatter plot of Exposure.Time..Mins. vs sample_size
+ggplot(df, aes(x = exposure_mins, y = sample_size)) +
+  geom_point(alpha = 0.6) +
+  geom_smooth(method = "lm", se = FALSE, color = "red") +
+  labs(x = "Exposure Time (mins)", y = "Sample Size")
+```
+
+```{r}
+# 13. Correlation matrix & heatmap of design flags
+bin_cols <- c(method_cols, stim_cols)
+corr_df <- cor(df[bin_cols] %>% mutate_all(as.numeric), use = "pairwise.complete.obs")
+ggplot(reshape2::melt(corr_df), aes(Var1, Var2, fill = value)) +
+  geom_tile() +
+  scale_fill_gradient2(midpoint = 0, low = "blue", mid = "white", high = "red") +
+  labs(x = NULL, y = NULL) +
+  theme_minimal()
+```
+
+```{r}
+# Scatter plot of exposure time vs. sample size colored by significance
+ggplot(df %>% filter(!is.na(significant)), 
+       aes(x = exposure_mins, y = sample_size, color = significant)) +
+  geom_point(alpha = 0.3, size = 3) +
+  scale_color_manual(values = c("yes" = "forestgreen", "no" = "firebrick")) +
+  labs(
+    x     = "Exposure Time (mins)",
+    y     = "Sample Size (n)",
+    color = "Significant?"
+  ) +
+  theme_minimal(base_size = 14) +
+  theme(
+    legend.position = "top",
+    panel.grid.minor = element_blank()
+  )
+
+```
+
+```{r}
+library(dplyr)
+library(ggplot2)
+library(scales)
+
+# 1. Identify the outlier
+max_n <- max(df$sample_size, na.rm = TRUE)
+max_n
+#> [1] 136748
+
+# 2. Filter it out
+df_no_out <- df %>%
+  filter(sample_size != max_n)
+
+# 3. Boxplot without the outlier
+ggplot(df_no_out, aes(x = "", y = sample_size)) +
+  geom_boxplot(fill = "steelblue", outlier.alpha = 0.4) +
+  scale_y_continuous(labels = comma) +
+  labs(
+    x     = NULL,
+    y     = "Sample Size (n)",
+    title = paste0("Distribution of Study Sample Sizes\n(excluding n = ", max_n, ")")
+  ) +
+  theme_minimal()
+
+
+```
+
+```{r}
+library(ggplot2)
+library(scales)
+library(dplyr)
+
+# Boxplot of exposure times, excluding all zeros
+ggplot(df %>% filter(exposure_mins > 0), 
+       aes(x = "", y = exposure_mins)) +
+  geom_boxplot(fill = "tomato", outlier.color = "darkred", outlier.alpha = 0.6) +
+  scale_y_continuous(labels = comma) +
+  labs(
+    x     = NULL,
+    y     = "Exposure Time (mins)",
+    title = "Distribution of Exposure Durations (excluding zeros)"
+  ) +
+  theme_minimal(base_size = 14)
+
+```
+
+```{r}
+library(dplyr)
+library(scales)
+
+df <- df %>%
+  mutate(
+    sample_cat = cut(
+      sample_size,
+      breaks = quantile(sample_size, probs = c(0, .33, .66, 1), na.rm = TRUE),
+      include.lowest = TRUE,
+      labels = c("low", "mid", "high")
+    ),
+    exposure_cat = cut(
+      exposure_mins,
+      breaks = quantile(exposure_mins, probs = c(0, .33, .66, 1), na.rm = TRUE),
+      include.lowest = TRUE,
+      labels = c("low", "mid", "high")
+    )
+  )
+
+# Verify
+df %>% count(sample_cat) %>% mutate(pct = scales::percent(n/sum(n)))
+df %>% count(exposure_cat) %>% mutate(pct = scales::percent(n/sum(n)))
+
+
+```
+
+```{r}
+library(dplyr)
+
+# Given your computed percentiles:
+# p_sample   33% =  74.10,  66% = 327.32
+# p_exposure 33% =   0.00,  66% =   5.11
+
+df <- df %>%
+  mutate(
+    sample_cat = case_when(
+      sample_size <=  74.10           ~ "low",
+      sample_size <= 327.32           ~ "mid",
+      TRUE                             ~ "high"
+    ),
+    exposure_cat = case_when(
+      exposure_mins <=   0.00         ~ "low",
+      exposure_mins <=   5.11         ~ "mid",
+      TRUE                             ~ "high"
+    )
+  )
+
+
+
+
+```
+
+```{r}
+library(dplyr)
+
+# 1. Compute 33rd & 66th percentiles *only* on non-zero exposures
+p_exp_nz <- df %>% 
+  filter(exposure_mins > 0) %>% 
+  pull(exposure_mins) %>% 
+  quantile(probs = c(0.33, 0.66), na.rm = TRUE)
+
+# 2. Assign new exposure_cat, leaving zeros as NA
+df <- df %>%
+  mutate(
+    exposure_cat = case_when(
+      exposure_mins == 0             ~ NA_character_,
+      exposure_mins <=  p_exp_nz[1]  ~ "low",
+      exposure_mins <=  p_exp_nz[2]  ~ "mid",
+      TRUE                           ~ "high"
+    )
+  )
+
+# 3. Quick check (excluding zeros)
+df %>%
+  filter(!is.na(exposure_cat)) %>%
+  count(exposure_cat) %>%
+  mutate(pct = scales::percent(n / sum(n)))
+
+```
+
+```{r}
+library(dplyr)
+library(ggplot2)
+library(scales)
+
+# 1. Compute counts for each exposure_cat × sample_cat combination
+df_points <- df %>%
+  filter(!is.na(exposure_cat), !is.na(sample_cat)) %>%
+  count(exposure_cat, sample_cat, name = "occurrence")
+
+# 2. Point plot: x = exposure_cat, y = sample_cat, size = occurrence
+ggplot(df_points, aes(x = exposure_cat, y = sample_cat, size = occurrence)) +
+  geom_point(color = "steelblue", alpha = 0.8) +
+  scale_size_area(max_size = 15) +
+  labs(
+    x     = "Exposure Category",
+    y     = "Sample Size Category",
+    size  = "Count of Studies",
+    title = "Study Counts by Exposure & Sample-Size Categories"
+  ) +
+  theme_minimal(base_size = 14) +
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1),
+    legend.position = "right"
+  )
+
+```
+
+```{r}
+df_points <- df %>%
+  # assign zeros to their own level rather than NA
+  mutate(exposure_cat = if_else(exposure_mins == 0, "zero", exposure_cat)) %>%
+  count(exposure_cat, sample_cat, name = "occurrence")
+
+ggplot(df_points, aes(exposure_cat, sample_cat, size = occurrence)) +
+  geom_point() + … 
+
+```
+
+```{r}
+library(tidyr)
+df_points <- df %>%
+  filter(!is.na(exposure_cat)) %>%      # keep only non-zero bins
+  count(exposure_cat, sample_cat) %>%
+  complete(exposure_cat, sample_cat, fill = list(n = 0)) %>%
+  rename(occurrence = n)
+
+ggplot(df_points, aes(exposure_cat, sample_cat, size = occurrence)) +
+  geom_point() + …
+
+```
+
