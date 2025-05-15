@@ -27,6 +27,7 @@ df2 <- read_excel(here("data", "05 metanalayiss - reviewed.xlsx"), sheet = 3) %>
 
 ```{r}
 glimpse(df2)
+glimpse(df1)
 ```
 
 ```{r}
@@ -205,3 +206,80 @@ summary(meta_reg)
 regtest(meta_model, model = "rma")
 
 ```
+
+
+```{r}
+# Load required libraries
+library(ggplot2)
+library(dplyr)
+# Assuming df_combined already exists and is ordered by outcome_group and descending effect size
+
+# Convert study_label to factor to respect the existing row order without duplicates
+df_combined <- df_combined %>%
+  mutate(
+    study_label = factor(study_label, levels = unique(study_label))
+  )
+
+# Calculate 95% CI bounds
+df_plot <- df_combined %>%
+  mutate(
+    se = sqrt(vi),
+    ci_lower = effect_size_hedges_g - 1.96 * se,
+    ci_upper = effect_size_hedges_g + 1.96 * se
+  )
+
+# Create forest-style ggplot
+ggplot(df_plot, aes(x = effect_size_hedges_g, y = study_label, color = outcome_group)) +
+  geom_point(size = 2) +
+  geom_errorbarh(aes(xmin = ci_lower, xmax = ci_upper), height = 0.2) +
+  geom_vline(xintercept = 0, linetype = "dashed", color = "grey50") +
+  scale_color_brewer(palette = "Set2") +
+  labs(
+    x = "Effect Size (Hedges' g)",
+    y = "Study",
+    color = "Outcome Group",
+    title = "Forest Plot of Hedges' g by Study and Outcome Group"
+  ) +
+  theme_minimal() +
+  theme(
+    axis.text.y = element_text(size = 8),
+    plot.title = element_text(size = 14, face = "bold"),
+    legend.position = "right"
+  )
+```
+
+```{r}
+# Calculate 95% CI bounds and add a row index for separate rows
+
+df_plot <- df_combined %>%
+  mutate(
+    se = sqrt(vi),
+    ci_lower = effect_size_hedges_g - 1.96 * se,
+    ci_upper = effect_size_hedges_g + 1.96 * se,
+    row_id = row_number()
+  )
+
+# Create forest-style ggplot with thicker error bars and separate rows
+
+ggplot(df_plot, aes(x = effect_size_hedges_g, y = row_id, color = outcome_group)) +
+  geom_point(size = 2) +
+  geom_errorbarh(aes(xmin = ci_lower, xmax = ci_upper), height = 0.3, size = 0.8) +  # thicker bars
+  geom_vline(xintercept = 0, linetype = "dashed", color = "grey50") +
+  scale_color_brewer(palette = "Set2") +
+  scale_y_reverse(breaks = df_plot$row_id, labels = df_plot$study_label) +
+  labs(
+    x = "Effect Size (Hedges' g)",
+    y = NULL,
+    color = "Outcome Group",
+    title = "Forest Plot of Hedges' g by Study and Outcome Group"
+  ) +
+  theme_minimal() +
+  theme(
+    axis.text.y = element_text(size = 8),
+    panel.grid.major.y = element_blank(),  # remove horizontal grid
+    plot.title = element_text(size = 14, face = "bold"),
+    legend.position = "right"
+  )
+```
+
+
